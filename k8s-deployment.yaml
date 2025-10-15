@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: psa-scraper
+  labels:
+    app: psa-scraper
+spec:
+  replicas: 8
+  selector:
+    matchLabels:
+      app: psa-scraper
+  template:
+    metadata:
+      labels:
+        app: psa-scraper
+    spec:
+      serviceAccountName: scraper-service-account
+      containers:
+        - name: scraper
+          image: us-east1-docker.pkg.dev/psa-scan-scraping/psa-repo/scraper:latest
+          imagePullPolicy: Always
+
+          # ✅ Inject all DB_* env vars directly from Secret
+          envFrom:
+            - secretRef:
+                name: db-credentials
+
+          # ✅ Add the Google credentials path explicitly
+          env:
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /var/secrets/google/key.json
+            - name: GCS_BUCKET
+              value: psa-scan-scraping-dataset
+
+            # Pod identity for unique random seed
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+
+            # Cert range configuration
+            - name: MIN_CERT_ID
+              value: "70000000"
+            - name: MAX_CERT_ID
+              value: "120000000"
+
+          resources:
+            requests:
+              cpu: "300m"
+              memory: "512Mi"
+            limits:
+              cpu: "600m"
+              memory: "1Gi"
+
+          # ✅ Add a readiness probe to ensure pod only marked "Ready" once Chrome & DB init succeed
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  # consider the scraper "ready" if Python is running and Cloud SQL port is reachable
+                  ps aux | grep '[p]ython scraper.py' >/dev/null 2>&1 && nc -z 127.0.0.1 5432
+            initialDelaySeconds: 20   # wait ~20s before first probe
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+
+          # ✅ Optional startupProbe for slower Chrome/DB initialization
+          startupProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  echo "Checking if scraper initialized..."
+                  ps aux | grep '[p]ython scraper.py' >/dev/null 2>&1
+            failureThreshold: 30  # ~5 min grace before restart
+            periodSeconds: 10
+
+          volumeMounts:
+            # ✅ Mount your GCP service account JSON key here
+            - name: google-cloud-key
+              mountPath: /var/secrets/google
+              readOnly: true
+
+            # ✅ Fix for Chrome crash — mount in-memory /dev/shm
+            - name: dshm
+              mountPath: /dev/shm
+
+      # ✅ Volume definitions
+      volumes:
+        # Mount service account key secret for GCS + Cloud SQL access
+        - name: google-cloud-key
+          secret:
+            secretName: scraper-service-account-key
+
+        # Shared memory mount for Chromium stability
+        - name: dshm
+          emptyDir:
+            medium: Memory

@@ -1,0 +1,30 @@
+# --- Python cache ---
+__pycache__/
+*.pyc
+
+# --- Local environments ---
+venv/
+.env
+
+# --- Terraform / Infrastructure ---
+infra/
+*.tfstate
+*.tfstate.backup
+terraform.tfvars
+*.backup
+
+# --- Git / Logs ---
+.git/
+.gitignore
+*.log
+*.json
+
+# --- Local data ---
+data/
+*.png
+*.jpg
+*.jpeg
+
+# --- Local scripts not needed in image ---
+main.py
+certs.txt
