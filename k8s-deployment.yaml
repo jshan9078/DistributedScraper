@@ -46,10 +46,10 @@ spec:
 
           resources:
             requests:
-              cpu: "500m"
+              cpu: "300m"
               memory: "512Mi"
             limits:
-              cpu: "1000m"
+              cpu: "600m"
               memory: "1Gi"
 
           # ✅ Add a readiness probe to ensure pod only marked "Ready" once Chrome & DB init succeed
