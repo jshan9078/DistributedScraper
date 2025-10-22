@@ -1,6 +1,8 @@
-# PSA Card Scraper
+# Distributed Web Scraping Framework
 
-A distributed web scraping system for collecting Pokemon trading card images from PSA (Professional Sports Authenticator) certification pages. The scraper automatically downloads, processes, and uploads card images to Google Cloud Storage, organized by PSA grade. **Note that written permission was received from PSA to carry out this scraping.** Data acquired from this distributed system will be used to build out deep learning models.
+A production-grade distributed web scraping system built on Google Kubernetes Engine (GKE) with PostgreSQL-based work queue coordination. Originally designed for collecting Pokemon trading card images from PSA certification pages, this framework provides a **reusable architecture for any large-scale web scraping project** requiring distributed coordination, fault tolerance, and horizontal scalability.
+
+**Current Implementation**: PSA card image scraper with automated download, processing, and cloud storage. **Note that written permission was received from PSA to carry out this scraping.** Data acquired from this distributed system will be used to build out deep learning models.
 
 ## Key Technologies
 
@@ -462,9 +464,172 @@ bucket-name/
 - Rate limited to respect PSA servers
 - Sequential processing per chain (parallel chains via multiple pods)
 
+## Adapting for Other Scraping Projects
+
+This framework can be repurposed for any large-scale web scraping project. The architecture separates concerns into modular components that can be adapted independently.
+
+### Core Reusable Components
+
+#### 1. **Work Queue Coordination System**
+The PostgreSQL-based work queue with atomic operations (`FOR UPDATE SKIP LOCKED`) is **domain-agnostic** and can coordinate any distributed task.
+
+**Adaptation Steps:**
+1. Modify the `work_queue` table schema to match your domain:
+   ```sql
+   CREATE TABLE work_queue (
+       task_id VARCHAR(255) PRIMARY KEY,  -- Your unique identifier (URL, product ID, etc.)
+       status VARCHAR(20) NOT NULL,
+       worker_id VARCHAR(100),
+       priority INT DEFAULT 0,            -- Optional: priority-based processing
+       metadata JSONB,                    -- Optional: store task-specific data
+       updated_at TIMESTAMP DEFAULT NOW()
+   );
+   ```
+
+2. Update `fetch_next_cert()` in [scraper.py:89-112](scraper.py#L89-L112) to use your task identifier
+3. Modify `insert_new_cert()` to handle your task format
+
+**Use Cases:**
+- E-commerce product scraping (task_id = product URL)
+- Social media data collection (task_id = user ID or post ID)
+- Document archival (task_id = document URL)
+- API pagination (task_id = page offset or cursor)
+
+#### 2. **Dual-Mode Processing Strategy**
+
+The queue + exploration pattern works for any scenario where:
+- You have a **known set of tasks** (queue mode)
+- You want to **discover new tasks** (exploration mode)
+
+**Examples:**
+- **Job Board Scraper**: Queue processes known job postings, exploration discovers new listings via search
+- **Real Estate Scraper**: Queue processes known property IDs, exploration crawls category pages for new listings
+- **Academic Paper Scraper**: Queue processes known DOIs, exploration follows citation graphs
+
+**Adaptation:**
+- Modify `process_chain()` logic to match your discovery pattern
+- Update exploration logic ([scraper.py:478-479](scraper.py#L478-L479)) to generate candidates relevant to your domain
+
+#### 3. **Chain Processing Optimization**
+
+Sequential processing works when your task space has **locality** (adjacent IDs likely both valid).
+
+**Applicable Domains:**
+- Sequential numeric IDs (invoices, orders, certificates)
+- Timestamp-based iteration (recent posts, daily archives)
+- Alphabetically sorted resources (dictionary entries, SKUs)
+
+**Adaptation:**
+- Replace cert_id increment logic with your sequencing strategy
+- Define chain-breaking conditions for your domain (e.g., HTTP 404, category change)
+
+#### 4. **Kubernetes Infrastructure**
+
+The GKE + Terraform setup is **completely domain-independent**. No changes needed to:
+- [infra/main.tf](infra/main.tf) - Infrastructure provisioning
+- [k8s-deployment.yaml](k8s-deployment.yaml) - Pod orchestration (except environment variables)
+- [Dockerfile](Dockerfile) - Container build (may need different dependencies)
+
+**Only Change:**
+- Environment variables (database name, bucket name, task-specific configs)
+- Container dependencies if using different scraping libraries
+
+### Example Adaptations
+
+#### Example 1: E-commerce Product Scraper
+
+**Changes Required:**
+1. **Work Queue**: task_id = product URL
+2. **Scraper Logic**:
+   - Replace `fetch_psa_page()` with product page fetching
+   - Replace image cropping with product data extraction (price, description, reviews)
+   - Replace GCS upload with database insert or CSV export
+3. **Chain Processing**: Follow pagination links or "similar products"
+4. **Exploration**: Start from category pages, discover new products
+
+**Files to Modify:**
+- [scraper.py](scraper.py): Lines 200-446 (scraping logic)
+- [k8s-deployment.yaml](k8s-deployment.yaml): Lines 36-45 (environment variables)
+
+#### Example 2: Social Media Archive
+
+**Changes Required:**
+1. **Work Queue**: task_id = user ID or post ID
+2. **Scraper Logic**:
+   - Replace Selenium with API calls (if available) or HTML parsing
+   - Store posts/comments in structured format (JSON to GCS or PostgreSQL)
+3. **Chain Processing**: Follow user timelines or comment threads
+4. **Exploration**: Discover new users via followers/following
+
+**Files to Modify:**
+- [scraper.py](scraper.py): Lines 150-500 (entire scraping pipeline)
+- [Dockerfile](Dockerfile): May not need Chromium if using API
+
+#### Example 3: Document Archive/Research Database
+
+**Changes Required:**
+1. **Work Queue**: task_id = document URL or DOI
+2. **Scraper Logic**:
+   - Download PDFs/documents instead of images
+   - Extract metadata (author, date, abstract)
+   - Store in GCS with organized folder structure
+3. **Chain Processing**: Follow citation graphs or reference lists
+4. **Exploration**: Crawl search result pages or journal archives
+
+**Files to Modify:**
+- [scraper.py](scraper.py): Lines 200-300 (download + processing logic)
+- [requirements.txt](requirements.txt): Add PDF parsing libraries (PyPDF2, pdfplumber)
+
+### Minimal Changes Checklist
+
+To adapt this framework for a new domain:
+
+- [ ] **Database**: Update `work_queue` schema for your task identifier
+- [ ] **Scraper Core**: Replace PSA-specific logic (fetch, parse, process)
+- [ ] **Storage**: Modify upload logic for your data format (GCS, CloudSQL, filesystem)
+- [ ] **Exploration**: Define how new tasks are discovered
+- [ ] **Chain Logic**: Decide if sequential processing applies to your domain
+- [ ] **Environment Variables**: Update [k8s-deployment.yaml](k8s-deployment.yaml) with your configs
+- [ ] **Dependencies**: Update [requirements.txt](requirements.txt) and [Dockerfile](Dockerfile) as needed
+
+### What Stays the Same
+
+You **do not need to modify**:
+- PostgreSQL atomic operations (work queue coordination)
+- Kubernetes deployment structure (pod management, health checks)
+- Terraform infrastructure (VPC, GKE cluster, node autoscaling)
+- Worker offset collision avoidance
+- Error handling and rate limiting patterns
+- Distributed coordination logic
+
+### Benefits of This Architecture
+
+**Horizontal Scalability**: Add more pods to increase throughput linearly
+- 8 pods = 8x throughput
+- 64 pods = 64x throughput (with more nodes)
+
+**Fault Tolerance**:
+- Pods can crash without losing work (state in PostgreSQL)
+- Automatic pod restarts via Kubernetes
+- Node auto-repair and auto-upgrade
+
+**Zero Race Conditions**:
+- Atomic PostgreSQL operations guarantee no duplicate work
+- Multiple pods can safely claim tasks concurrently
+
+**Cost Efficiency**:
+- Auto-scales from 1 node (idle) to 8 nodes (active scraping)
+- Pay only for what you use
+
+**Production-Ready**:
+- Health checks prevent cascading failures
+- Resource limits prevent runaway processes
+- Workload identity for secure authentication
+- Infrastructure-as-code for reproducibility
+
 ## License
 
-This project is for educational and research purposes. Please respect PSA's terms of service and rate limits when using this scraper.
+This project is for educational and research purposes. Please respect target website terms of service and rate limits when using this scraper.
 
 ## Notes
 
